@@ -57,8 +57,15 @@ app.MapDocumentUploadEndpoint();
 // other sources by implementing IIngestionSource.
 // Important: ensure that any content you ingest is trusted, as it may be reflected back
 // to users or could be a source of prompt injection risk.
-await DataIngestor.IngestDataAsync(
-    app.Services,
-    new PDFDirectorySource(Path.Combine(builder.Environment.WebRootPath, "Data")));
+var pdfDataPath = Path.GetFullPath(Path.Combine(builder.Environment.WebRootPath, "Data"));
+var webRootFullPath = Path.GetFullPath(builder.Environment.WebRootPath);
+
+// Validate the PDF data path is within WebRootPath to prevent path traversal
+if (pdfDataPath.StartsWith(webRootFullPath, StringComparison.OrdinalIgnoreCase))
+{
+    await DataIngestor.IngestDataAsync(
+        app.Services,
+        new PDFDirectorySource(pdfDataPath));
+}
 
 app.Run();

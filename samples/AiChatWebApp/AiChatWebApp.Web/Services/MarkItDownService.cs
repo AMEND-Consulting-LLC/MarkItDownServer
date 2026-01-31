@@ -1,14 +1,29 @@
 using System.Net.Http.Headers;
+using System.Text.RegularExpressions;
 
 namespace AiChatWebApp.Web.Services;
 
 /// <summary>
 /// Client service for interacting with the MarkItDown server API
 /// </summary>
-public class MarkItDownService
+public partial class MarkItDownService
 {
     private readonly HttpClient _httpClient;
     private readonly ILogger<MarkItDownService> _logger;
+
+    // Regex to sanitize strings for logging (remove control characters and newlines)
+    [GeneratedRegex(@"[\r\n\t\x00-\x1F\x7F]")]
+    private static partial Regex LogSanitizeRegex();
+
+    /// <summary>
+    /// Sanitizes a string for safe logging by removing control characters and newlines.
+    /// </summary>
+    private static string SanitizeForLog(string? input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return string.Empty;
+        return LogSanitizeRegex().Replace(input, "_");
+    }
 
     public MarkItDownService(HttpClient httpClient, ILogger<MarkItDownService> logger)
     {
@@ -39,7 +54,7 @@ public class MarkItDownService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error converting file {FileName} to markdown", fileName);
+            _logger.LogError(ex, "Error converting file {FileName} to markdown", SanitizeForLog(fileName));
             throw;
         }
     }

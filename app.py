@@ -104,18 +104,43 @@ class HealthResponse(BaseModel):
     rate_limit_enabled: bool
     rate_limit: str | None
 
+def sanitize_extension(filename: str | None) -> str:
+    """Extract and sanitize the file extension from a filename.
+
+    Prevents path traversal by extracting only the basename's extension
+    and validating it contains only alphanumeric characters.
+
+    Args:
+        filename: The filename to extract extension from
+
+    Returns:
+        Sanitized extension with leading dot (e.g., '.pdf') or empty string
+    """
+    if not filename:
+        return ""
+    # Get only the basename to prevent path traversal
+    basename = Path(filename).name
+    if '.' not in basename:
+        return ""
+    ext = basename.rsplit('.', 1)[1].lower()
+    # Validate extension contains only alphanumeric characters
+    if ext.isalnum():
+        return f".{ext}"
+    return ""
+
 def allowed_file(filename: str | None) -> bool:
     """Check if the uploaded file has an allowed extension.
-    
+
     Args:
         filename: Name of the file to check
-        
+
     Returns:
         True if file extension is allowed, False otherwise
     """
     if not filename:
         return False
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    ext = sanitize_extension(filename)
+    return ext and ext[1:] in ALLOWED_EXTENSIONS  # Remove leading dot for comparison
 
 def convert_to_md(filepath: str) -> str:
     """Convert a file to Markdown format.
@@ -213,10 +238,11 @@ async def process_file(
                 status_code=400
             )
         
-        # Save the file to a temporary directory with proper extension
+        # Save the file to a temporary directory with sanitized extension
+        safe_suffix = sanitize_extension(file.filename)
         with tempfile.NamedTemporaryFile(
-            delete=False, 
-            suffix=Path(file.filename).suffix
+            delete=False,
+            suffix=safe_suffix
         ) as temp_file:
             temp_file.write(file_content)
             temp_file_path = temp_file.name

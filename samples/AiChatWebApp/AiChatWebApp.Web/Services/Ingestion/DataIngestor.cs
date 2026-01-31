@@ -1,13 +1,28 @@
-﻿using Microsoft.Extensions.AI;
+﻿using System.Text.RegularExpressions;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.VectorData;
 
 namespace AiChatWebApp.Web.Services.Ingestion;
 
-public class DataIngestor(
+public partial class DataIngestor(
     ILogger<DataIngestor> logger,
     VectorStoreCollection<string, IngestedChunk> chunksCollection,
     VectorStoreCollection<string, IngestedDocument> documentsCollection)
 {
+    // Regex to sanitize strings for logging (remove control characters and newlines)
+    [GeneratedRegex(@"[\r\n\t\x00-\x1F\x7F]")]
+    private static partial Regex LogSanitizeRegex();
+
+    /// <summary>
+    /// Sanitizes a string for safe logging by removing control characters and newlines.
+    /// </summary>
+    private static string SanitizeForLog(string? input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return string.Empty;
+        return LogSanitizeRegex().Replace(input, "_");
+    }
+
     public static async Task IngestDataAsync(IServiceProvider services, IIngestionSource source)
     {
         using var scope = services.CreateScope();
@@ -26,7 +41,7 @@ public class DataIngestor(
         var deletedDocuments = await source.GetDeletedDocumentsAsync(documentsForSource);
         foreach (var deletedDocument in deletedDocuments)
         {
-            logger.LogInformation("Removing ingested data for {DocumentId}", deletedDocument.DocumentId);
+            logger.LogInformation("Removing ingested data for {DocumentId}", SanitizeForLog(deletedDocument.DocumentId));
             await DeleteChunksForDocumentAsync(deletedDocument);
             await documentsCollection.DeleteAsync(deletedDocument.Key);
         }
@@ -34,7 +49,7 @@ public class DataIngestor(
         var modifiedDocuments = await source.GetNewOrModifiedDocumentsAsync(documentsForSource);
         foreach (var modifiedDocument in modifiedDocuments)
         {
-            logger.LogInformation("Processing {DocumentId}", modifiedDocument.DocumentId);
+            logger.LogInformation("Processing {DocumentId}", SanitizeForLog(modifiedDocument.DocumentId));
             await DeleteChunksForDocumentAsync(modifiedDocument);
 
             await documentsCollection.UpsertAsync(modifiedDocument);

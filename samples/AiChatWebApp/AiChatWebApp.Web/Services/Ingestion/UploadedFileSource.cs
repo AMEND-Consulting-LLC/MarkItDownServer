@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.SemanticKernel.Text;
 
 namespace AiChatWebApp.Web.Services.Ingestion;
@@ -6,11 +7,24 @@ namespace AiChatWebApp.Web.Services.Ingestion;
 /// Ingestion source for files uploaded through the web interface.
 /// Uses MarkItDown service to convert various file types to Markdown.
 /// </summary>
-public class UploadedFileSource(
+public partial class UploadedFileSource(
     string sourceDirectory,
     MarkItDownService markItDownService,
     ILogger<UploadedFileSource> logger) : IIngestionSource
 {
+    // Regex to sanitize strings for logging (remove control characters and newlines)
+    [GeneratedRegex(@"[\r\n\t\x00-\x1F\x7F]")]
+    private static partial Regex LogSanitizeRegex();
+
+    /// <summary>
+    /// Sanitizes a string for safe logging by removing control characters and newlines.
+    /// </summary>
+    private static string SanitizeForLog(string? input)
+    {
+        if (string.IsNullOrEmpty(input))
+            return string.Empty;
+        return LogSanitizeRegex().Replace(input, "_");
+    }
     public static string SourceFileId(string path) => Path.GetFileName(path);
     public static string SourceFileVersion(string path) => File.GetLastWriteTimeUtc(path).ToString("o");
 
@@ -91,7 +105,7 @@ public class UploadedFileSource(
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error processing document {DocumentId}", document.DocumentId);
+            logger.LogError(ex, "Error processing document {DocumentId}", SanitizeForLog(document.DocumentId));
             
             // Return a chunk with error information
             return new[]
