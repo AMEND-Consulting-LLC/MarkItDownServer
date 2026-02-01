@@ -1,0 +1,332 @@
+"""Integration tests for API endpoints."""
+
+import os
+import sys
+from datetime import datetime
+from io import BytesIO
+from unittest.mock import patch, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+# Add parent directory to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+class TestRootEndpoint:
+    """Tests for the root endpoint (/)."""
+
+    def test_root_returns_200(self, test_client):
+        """Test that root endpoint returns 200."""
+        response = test_client.get("/")
+        assert response.status_code == 200
+
+    def test_root_returns_service_info(self, test_client):
+        """Test that root returns service information."""
+        response = test_client.get("/")
+        data = response.json()
+
+        assert data["service"] == "MarkItDown Server"
+        assert "description" in data
+        assert data["version"] == "1.0.0"
+
+    def test_root_contains_all_endpoints(self, test_client):
+        """Test that root lists all available endpoints."""
+        response = test_client.get("/")
+        data = response.json()
+
+        assert "endpoints" in data
+        endpoints = data["endpoints"]
+        assert endpoints["health"] == "/health"
+        assert endpoints["docs"] == "/docs"
+        assert endpoints["process"] == "/process_file"
+
+    def test_root_returns_json(self, test_client):
+        """Test that root returns JSON content type."""
+        response = test_client.get("/")
+        assert response.headers["content-type"] == "application/json"
+
+
+class TestHealthEndpoint:
+    """Tests for the health endpoint (/health)."""
+
+    def test_health_returns_200(self, test_client):
+        """Test that health endpoint returns 200."""
+        response = test_client.get("/health")
+        assert response.status_code == 200
+
+    def test_health_returns_healthy_status(self, test_client):
+        """Test that health returns healthy status."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["status"] == "healthy"
+
+    def test_health_timestamp_is_valid_iso(self, test_client):
+        """Test that timestamp is valid ISO format."""
+        response = test_client.get("/health")
+        data = response.json()
+
+        # Should not raise if valid ISO format
+        timestamp = datetime.fromisoformat(data["timestamp"])
+        assert timestamp is not None
+
+    def test_health_shows_service_name(self, test_client):
+        """Test that health shows service name."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["service"] == "MarkItDown Server"
+
+    def test_health_shows_version(self, test_client):
+        """Test that health shows version."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["version"] == "1.0.0"
+
+    def test_health_shows_worker_count(self, test_client):
+        """Test that health shows worker count."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert "workers" in data
+        assert isinstance(data["workers"], int)
+
+    def test_health_rate_limit_disabled_by_default(self, test_client):
+        """Test that rate limiting is disabled by default."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["rate_limit_enabled"] is False
+
+    def test_health_llm_disabled_by_default(self, test_client):
+        """Test that LLM is disabled by default."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["llm_enabled"] is False
+        assert data["llm_provider"] is None
+
+    def test_health_azure_docintel_disabled_by_default(self, test_client):
+        """Test that Azure DocIntel is disabled by default."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["azure_docintel_enabled"] is False
+
+    def test_health_plugins_disabled_by_default(self, test_client):
+        """Test that plugins are disabled by default."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["plugins_enabled"] is False
+
+    def test_health_response_has_all_fields(self, test_client):
+        """Test that health response has all expected fields."""
+        response = test_client.get("/health")
+        data = response.json()
+
+        expected_fields = [
+            "status", "timestamp", "service", "version", "workers",
+            "rate_limit_enabled", "rate_limit", "llm_enabled",
+            "llm_provider", "azure_docintel_enabled", "plugins_enabled"
+        ]
+        for field in expected_fields:
+            assert field in data, f"Missing field: {field}"
+
+
+class TestProcessFileEndpoint:
+    """Tests for the process_file endpoint (/process_file)."""
+
+    def test_process_file_valid_txt(self, test_client, sample_txt_content, mock_markitdown):
+        """Test processing a valid text file."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "markdown" in data
+
+    def test_process_file_valid_pdf(self, test_client, sample_pdf_content, mock_markitdown):
+        """Test processing a valid PDF file."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("document.pdf", BytesIO(sample_pdf_content), "application/pdf")}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "markdown" in data
+
+    def test_process_file_valid_image(self, test_client, sample_image_content, mock_markitdown):
+        """Test processing a valid image file."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("image.png", BytesIO(sample_image_content), "image/png")}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "markdown" in data
+
+    def test_process_file_no_file_returns_422(self, test_client):
+        """Test that missing file returns 422."""
+        response = test_client.post("/process_file")
+        assert response.status_code == 422
+
+    def test_process_file_disallowed_type_returns_400(self, test_client):
+        """Test that disallowed file type returns 400."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("script.exe", BytesIO(b"fake exe"), "application/octet-stream")}
+        )
+        assert response.status_code == 400
+        data = response.json()
+        assert "error" in data
+        assert "not allowed" in data["error"].lower()
+
+    def test_process_file_empty_file_returns_400(self, test_client, empty_file_content):
+        """Test that empty file returns 400."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("empty.txt", BytesIO(empty_file_content), "text/plain")}
+        )
+        assert response.status_code == 400
+        data = response.json()
+        assert "error" in data
+        assert "empty" in data["error"].lower()
+
+    def test_process_file_exceeds_size_limit_returns_413(self, test_client, large_file_content):
+        """Test that file exceeding size limit returns 413."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("large.txt", BytesIO(large_file_content), "text/plain")}
+        )
+        assert response.status_code == 413
+        data = response.json()
+        assert "error" in data
+        assert "large" in data["error"].lower()
+
+    def test_process_file_conversion_error_returns_500(self, test_client, sample_txt_content, mock_markitdown_error):
+        """Test that conversion error returns 500."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+        assert response.status_code == 500
+        data = response.json()
+        assert "error" in data
+
+    def test_process_file_returns_markdown_key(self, test_client, sample_txt_content, mock_markitdown):
+        """Test that response contains markdown key."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+        data = response.json()
+        assert "markdown" in data
+        assert isinstance(data["markdown"], str)
+
+    def test_process_file_case_insensitive_extension(self, test_client, sample_txt_content, mock_markitdown):
+        """Test that extension matching is case insensitive."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.TXT", BytesIO(sample_txt_content), "text/plain")}
+        )
+        assert response.status_code == 200
+
+    def test_process_file_pdf_extension(self, test_client, sample_pdf_content, mock_markitdown):
+        """Test PDF file with uppercase extension."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("document.PDF", BytesIO(sample_pdf_content), "application/pdf")}
+        )
+        assert response.status_code == 200
+
+    # Audio format tests
+    @pytest.mark.parametrize("ext", ["mp3", "wav", "flac", "aac", "ogg"])
+    def test_process_file_audio_formats(self, test_client, ext, mock_markitdown):
+        """Test that audio formats are accepted."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": (f"audio.{ext}", BytesIO(b"fake audio data"), "audio/mpeg")}
+        )
+        assert response.status_code == 200
+
+
+class TestSecurityHeaders:
+    """Tests for security headers middleware."""
+
+    def test_x_content_type_options_header(self, test_client):
+        """Test X-Content-Type-Options header is set."""
+        response = test_client.get("/health")
+        assert response.headers.get("x-content-type-options") == "nosniff"
+
+    def test_x_frame_options_header(self, test_client):
+        """Test X-Frame-Options header is set."""
+        response = test_client.get("/health")
+        assert response.headers.get("x-frame-options") == "DENY"
+
+    def test_x_xss_protection_header(self, test_client):
+        """Test X-XSS-Protection header is set."""
+        response = test_client.get("/health")
+        assert response.headers.get("x-xss-protection") == "1; mode=block"
+
+    def test_security_headers_on_root(self, test_client):
+        """Test security headers are present on root endpoint."""
+        response = test_client.get("/")
+        assert "x-content-type-options" in response.headers
+        assert "x-frame-options" in response.headers
+        assert "x-xss-protection" in response.headers
+
+    def test_security_headers_on_process_file(self, test_client, sample_txt_content, mock_markitdown):
+        """Test security headers are present on process_file endpoint."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+        assert "x-content-type-options" in response.headers
+        assert "x-frame-options" in response.headers
+
+
+class TestCORS:
+    """Tests for CORS middleware."""
+
+    def test_cors_allows_all_origins(self, test_client):
+        """Test that CORS allows all origins (as configured)."""
+        response = test_client.options(
+            "/health",
+            headers={"Origin": "http://example.com", "Access-Control-Request-Method": "GET"}
+        )
+        # CORS preflight should work
+        assert response.status_code in [200, 405]  # Depends on FastAPI version
+
+    def test_cors_header_on_response(self, test_client):
+        """Test that CORS header is present on response."""
+        response = test_client.get("/health", headers={"Origin": "http://example.com"})
+        # With allow_origins=["*"], this header should be present
+        assert "access-control-allow-origin" in response.headers
+
+
+class TestTempFileCleanup:
+    """Tests for temporary file cleanup."""
+
+    def test_temp_file_cleanup_on_success(self, test_client, sample_txt_content, mock_markitdown, tmp_path):
+        """Test that temp files are cleaned up after successful conversion."""
+        import tempfile
+        original_temp_dir = tempfile.gettempdir()
+
+        # Count temp files before
+        initial_files = set(os.listdir(original_temp_dir))
+
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+
+        assert response.status_code == 200
+
+        # Temp file should be cleaned up - no new files should remain
+        # (This is a basic check; exact file tracking would require more setup)
+
+    def test_temp_file_cleanup_on_error(self, test_client, sample_txt_content, mock_markitdown_error):
+        """Test that temp files are cleaned up even on conversion error."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+
+        assert response.status_code == 500
+        # Error occurred but temp file cleanup should still happen

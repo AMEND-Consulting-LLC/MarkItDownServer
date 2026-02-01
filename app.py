@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -10,6 +11,20 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from markitdown import MarkItDown
+
+# Optional LLM support (OpenAI and Azure OpenAI)
+try:
+    from openai import OpenAI, AzureOpenAI
+    LLM_AVAILABLE = True
+except ImportError:
+    LLM_AVAILABLE = False
+
+# Optional Azure Document Intelligence support
+try:
+    from azure.core.credentials import AzureKeyCredential
+    AZURE_DOCINTEL_AVAILABLE = True
+except ImportError:
+    AZURE_DOCINTEL_AVAILABLE = False
 
 # Optional rate limiting support
 try:
@@ -20,9 +35,10 @@ try:
 except ImportError:
     RATE_LIMIT_AVAILABLE = False
 
-# Configure logging
+# Configure logging with configurable level
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -32,6 +48,25 @@ logger = logging.getLogger(__name__)
 WORKERS = int(os.getenv('WORKERS', '1'))
 ENABLE_RATE_LIMIT = os.getenv('ENABLE_RATE_LIMIT', 'false').lower() == 'true'
 RATE_LIMIT = os.getenv('RATE_LIMIT', '60/minute')  # Default: 60 requests per minute
+
+# LLM Configuration (for image captioning and enhanced document processing)
+LLM_PROVIDER = os.getenv('LLM_PROVIDER', '').lower()  # 'openai', 'azure_openai', or empty
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+OPENAI_BASE_URL = os.getenv('OPENAI_BASE_URL')  # For LiteLLM proxy or other OpenAI-compatible APIs
+AZURE_OPENAI_ENDPOINT = os.getenv('AZURE_OPENAI_ENDPOINT')
+AZURE_OPENAI_API_KEY = os.getenv('AZURE_OPENAI_API_KEY')
+AZURE_OPENAI_API_VERSION = os.getenv('AZURE_OPENAI_API_VERSION', '2024-02-15-preview')
+LLM_MODEL = os.getenv('LLM_MODEL', 'gpt-4o')
+LLM_PROMPT = os.getenv('LLM_PROMPT')
+
+# Azure Document Intelligence Configuration
+AZURE_DOCINTEL_ENDPOINT = os.getenv('AZURE_DOCINTEL_ENDPOINT')
+AZURE_DOCINTEL_API_KEY = os.getenv('AZURE_DOCINTEL_API_KEY')
+AZURE_DOCINTEL_FILE_TYPES = os.getenv('AZURE_DOCINTEL_FILE_TYPES')  # Comma-separated: pdf,docx,xlsx,pptx,png,jpg,tiff,bmp
+
+# Other MarkItDown features
+ENABLE_PLUGINS = os.getenv('ENABLE_PLUGINS', 'false').lower() == 'true'
+EXIFTOOL_PATH = os.getenv('EXIFTOOL_PATH')
 
 # FastAPI app with metadata
 app = FastAPI(
@@ -103,6 +138,10 @@ class HealthResponse(BaseModel):
     workers: int
     rate_limit_enabled: bool
     rate_limit: str | None
+    llm_enabled: bool
+    llm_provider: str | None
+    azure_docintel_enabled: bool
+    plugins_enabled: bool
 
 def sanitize_extension(filename: str | None) -> str:
     """Extract and sanitize the file extension from a filename.
@@ -142,19 +181,102 @@ def allowed_file(filename: str | None) -> bool:
     ext = sanitize_extension(filename)
     return ext and ext[1:] in ALLOWED_EXTENSIONS  # Remove leading dot for comparison
 
+def create_markitdown_instance() -> MarkItDown:
+    """Create a configured MarkItDown instance based on environment variables.
+
+    Returns:
+        Configured MarkItDown instance with LLM and/or Azure Document Intelligence
+        if the appropriate environment variables are set.
+    """
+    kwargs = {
+        'enable_plugins': ENABLE_PLUGINS
+    }
+
+    features = []
+
+    # Configure LLM client for image captioning
+    if LLM_PROVIDER == 'openai' and LLM_AVAILABLE and OPENAI_API_KEY:
+        client_kwargs = {'api_key': OPENAI_API_KEY}
+        if OPENAI_BASE_URL:
+            client_kwargs['base_url'] = OPENAI_BASE_URL
+            features.append(f"LLM(OpenAI-compatible: {OPENAI_BASE_URL})")
+        else:
+            features.append("LLM(OpenAI)")
+        kwargs['llm_client'] = OpenAI(**client_kwargs)
+        kwargs['llm_model'] = LLM_MODEL
+        if LLM_PROMPT:
+            kwargs['llm_prompt'] = LLM_PROMPT
+    elif LLM_PROVIDER == 'azure_openai' and LLM_AVAILABLE and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY:
+        kwargs['llm_client'] = AzureOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            api_version=AZURE_OPENAI_API_VERSION,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT
+        )
+        kwargs['llm_model'] = LLM_MODEL
+        if LLM_PROMPT:
+            kwargs['llm_prompt'] = LLM_PROMPT
+        features.append("LLM(Azure OpenAI)")
+
+    # Configure Azure Document Intelligence
+    if AZURE_DOCINTEL_ENDPOINT and AZURE_DOCINTEL_AVAILABLE:
+        kwargs['docintel_endpoint'] = AZURE_DOCINTEL_ENDPOINT
+        if AZURE_DOCINTEL_API_KEY:
+            kwargs['docintel_credential'] = AzureKeyCredential(AZURE_DOCINTEL_API_KEY)
+        if AZURE_DOCINTEL_FILE_TYPES:
+            kwargs['docintel_file_types'] = set(AZURE_DOCINTEL_FILE_TYPES.lower().split(','))
+        features.append("Azure-DocIntel")
+
+    # Configure ExifTool path
+    if EXIFTOOL_PATH:
+        kwargs['exiftool_path'] = EXIFTOOL_PATH
+        features.append("ExifTool")
+
+    if ENABLE_PLUGINS:
+        features.append("Plugins")
+
+    if features:
+        logger.debug(f"MarkItDown features enabled: {', '.join(features)}")
+    else:
+        logger.debug("MarkItDown using default configuration (no LLM/Azure features)")
+
+    return MarkItDown(**kwargs)
+
+
 def convert_to_md(filepath: str) -> str:
     """Convert a file to Markdown format.
-    
+
     Args:
         filepath: Path to the file to convert
-        
+
     Returns:
         Markdown content as string
     """
-    logger.info(f"Converting file: {filepath}")
-    markitdown = MarkItDown()
+    start_time = time.time()
+    logger.info(f"Starting conversion: {filepath}")
+
+    # Log file info
+    file_size = os.path.getsize(filepath)
+    logger.info(f"File size: {file_size / 1024:.1f} KB")
+
+    # Create instance
+    logger.debug("Creating MarkItDown instance...")
+    instance_start = time.time()
+    markitdown = create_markitdown_instance()
+    logger.debug(f"Instance created in {time.time() - instance_start:.2f}s")
+
+    # Convert
+    logger.info("Starting document conversion...")
+    convert_start = time.time()
     result = markitdown.convert(filepath)
-    logger.info(f"Conversion result: {result.text_content[:100]}")
+    convert_time = time.time() - convert_start
+    logger.info(f"Conversion completed in {convert_time:.2f}s")
+
+    # Log result info
+    content_length = len(result.text_content)
+    total_time = time.time() - start_time
+    logger.info(f"Result: {content_length} chars, total time: {total_time:.2f}s")
+    logger.debug(f"Preview: {result.text_content[:200]}...")
+
     return result.text_content
 
 @app.get("/", summary="Root endpoint", description="Returns service information")
@@ -179,6 +301,19 @@ def read_root():
 )
 def health_check():
     """Get service health status."""
+    # Determine LLM status
+    llm_enabled = False
+    llm_provider_name = None
+    if LLM_PROVIDER == 'openai' and LLM_AVAILABLE and OPENAI_API_KEY:
+        llm_enabled = True
+        llm_provider_name = 'openai' if not OPENAI_BASE_URL else 'openai-compatible'
+    elif LLM_PROVIDER == 'azure_openai' and LLM_AVAILABLE and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY:
+        llm_enabled = True
+        llm_provider_name = 'azure_openai'
+
+    # Determine Azure Document Intelligence status
+    azure_docintel_enabled = bool(AZURE_DOCINTEL_ENDPOINT and AZURE_DOCINTEL_AVAILABLE)
+
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
@@ -186,7 +321,11 @@ def health_check():
         "version": "1.0.0",
         "workers": WORKERS,
         "rate_limit_enabled": ENABLE_RATE_LIMIT and RATE_LIMIT_AVAILABLE,
-        "rate_limit": RATE_LIMIT if (ENABLE_RATE_LIMIT and RATE_LIMIT_AVAILABLE) else None
+        "rate_limit": RATE_LIMIT if (ENABLE_RATE_LIMIT and RATE_LIMIT_AVAILABLE) else None,
+        "llm_enabled": llm_enabled,
+        "llm_provider": llm_provider_name,
+        "azure_docintel_enabled": azure_docintel_enabled,
+        "plugins_enabled": ENABLE_PLUGINS
     }
 
 @app.post(
@@ -206,71 +345,100 @@ async def process_file(
     file: UploadFile = File(..., description="Document file to convert to Markdown")
 ) -> MarkdownResponse:
     """Process an uploaded file and convert it to Markdown."""
+    request_start = time.time()
     temp_file_path = None
-    
+
     # Validate filename
     if not file.filename:
         return JSONResponse(
-            content={'error': 'Filename is required'}, 
+            content={'error': 'Filename is required'},
             status_code=400
         )
-    
+
+    logger.info(f"=== Processing request: {file.filename} ===")
+
     if not allowed_file(file.filename):
+        logger.warning(f"Rejected file type: {file.filename}")
         return JSONResponse(
-            content={'error': f'File type not allowed. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}'}, 
+            content={'error': f'File type not allowed. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}'},
             status_code=400
         )
-    
+
     try:
+        # Read file content
+        logger.debug("Reading uploaded file...")
+        read_start = time.time()
         file_content = await file.read()
-        
+        logger.debug(f"File read in {time.time() - read_start:.2f}s")
+
+        file_size_kb = len(file_content) / 1024
+        logger.info(f"Received: {file.filename} ({file_size_kb:.1f} KB)")
+
         # Validate file size
         if len(file_content) > MAX_FILE_SIZE:
+            logger.warning(f"File too large: {file_size_kb:.1f} KB > {MAX_FILE_SIZE / 1024:.1f} KB")
             return JSONResponse(
-                content={'error': f'File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024):.0f}MB'}, 
+                content={'error': f'File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024):.0f}MB'},
                 status_code=413
             )
-        
+
         # Validate file is not empty
         if len(file_content) == 0:
+            logger.warning("Rejected empty file")
             return JSONResponse(
-                content={'error': 'File is empty'}, 
+                content={'error': 'File is empty'},
                 status_code=400
             )
-        
+
         # Save the file to a temporary directory with sanitized extension
         safe_suffix = sanitize_extension(file.filename)
+        logger.debug(f"Writing to temp file with suffix: {safe_suffix}")
         with tempfile.NamedTemporaryFile(
             delete=False,
             suffix=safe_suffix
         ) as temp_file:
             temp_file.write(file_content)
             temp_file_path = temp_file.name
-            logger.info(f"Temporary file path: {temp_file_path}")
-        
+            logger.debug(f"Temp file created: {temp_file_path}")
+
         # Convert the file to markdown
         markdown_content = convert_to_md(temp_file_path)
-        logger.info("File converted to markdown successfully")
-        
+
+        total_time = time.time() - request_start
+        logger.info(f"=== Request completed in {total_time:.2f}s ===")
+
         return JSONResponse(content={'markdown': markdown_content})
-        
+
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
+        total_time = time.time() - request_start
+        logger.error(f"Error after {total_time:.2f}s: {str(e)}")
         return JSONResponse(content={'error': str(e)}, status_code=500)
-        
+
     finally:
         # Ensure the temporary file is deleted
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
-            logger.info(f"Temporary file deleted: {temp_file_path}")
+            logger.debug(f"Temp file deleted: {temp_file_path}")
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     # Log startup configuration
-    logger.info(f"Starting MarkItDown Server with {WORKERS} worker(s)")
+    logger.info("=" * 50)
+    logger.info("MarkItDown Server Starting")
+    logger.info("=" * 50)
+    logger.info(f"Workers: {WORKERS}")
+    logger.info(f"Log level: {LOG_LEVEL}")
+    logger.info(f"LLM Provider: {LLM_PROVIDER or 'disabled'}")
+    if LLM_PROVIDER:
+        logger.info(f"LLM Model: {LLM_MODEL}")
+        if OPENAI_BASE_URL:
+            logger.info(f"OpenAI Base URL: {OPENAI_BASE_URL}")
+    logger.info(f"Azure DocIntel: {'enabled' if AZURE_DOCINTEL_ENDPOINT else 'disabled'}")
+    logger.info(f"Plugins: {'enabled' if ENABLE_PLUGINS else 'disabled'}")
     if ENABLE_RATE_LIMIT and RATE_LIMIT_AVAILABLE:
         logger.info(f"Rate limiting: {RATE_LIMIT}")
+    logger.info("=" * 50)
     
     # Run with configured number of workers
     # When workers > 1, we need to pass the app as a string

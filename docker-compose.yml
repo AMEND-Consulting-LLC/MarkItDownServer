@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  markitdown:
+    build:
+      context: .
+      dockerfile: dockerfile
+    image: markitdownserver:latest
+    container_name: markitdown-server
+    ports:
+      - "${PORT:-8490}:8490"
+    environment:
+      # Server Configuration
+      - PORT=${PORT:-8490}
+      - WORKERS=${WORKERS:-1}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - ENABLE_RATE_LIMIT=${ENABLE_RATE_LIMIT:-false}
+      - RATE_LIMIT=${RATE_LIMIT:-60/minute}
+      - MAX_FILE_SIZE=${MAX_FILE_SIZE:-52428800}
+
+      # LLM Configuration (for image captioning)
+      # Set LLM_PROVIDER to 'openai' or 'azure_openai' to enable
+      - LLM_PROVIDER=${LLM_PROVIDER:-}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o}
+      - LLM_PROMPT=${LLM_PROMPT:-}
+
+      # OpenAI / LiteLLM Proxy Configuration
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+
+      # Azure OpenAI Configuration
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT:-}
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY:-}
+      - AZURE_OPENAI_API_VERSION=${AZURE_OPENAI_API_VERSION:-2024-02-15-preview}
+
+      # Azure Document Intelligence Configuration
+      - AZURE_DOCINTEL_ENDPOINT=${AZURE_DOCINTEL_ENDPOINT:-}
+      - AZURE_DOCINTEL_API_KEY=${AZURE_DOCINTEL_API_KEY:-}
+      - AZURE_DOCINTEL_FILE_TYPES=${AZURE_DOCINTEL_FILE_TYPES:-}
+
+      # Other Features
+      - ENABLE_PLUGINS=${ENABLE_PLUGINS:-false}
+      - EXIFTOOL_PATH=${EXIFTOOL_PATH:-}
+    volumes:
+      # Optional: Mount a volume for temporary file processing
+      # - ./data:/app/data
+      []
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8490/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: LiteLLM Proxy for multi-model support
+  # Uncomment to use LiteLLM as your LLM provider
+  # litellm:
+  #   image: ghcr.io/berriai/litellm:main-latest
+  #   container_name: litellm-proxy
+  #   ports:
+  #     - "4000:4000"
+  #   environment:
+  #     - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-}
+  #   volumes:
+  #     - ./litellm_config.yaml:/app/config.yaml
+  #   command: ["--config", "/app/config.yaml"]

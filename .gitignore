@@ -397,3 +397,16 @@ FodyWeavers.xsd
 
 # Claude Code local settings
 .claude/
+
+# Environment variables (contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Python testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
