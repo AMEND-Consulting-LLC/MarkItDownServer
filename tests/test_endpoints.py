@@ -121,11 +121,17 @@ class TestHealthEndpoint:
 
         expected_fields = [
             "status", "timestamp", "service", "version", "workers",
-            "rate_limit_enabled", "rate_limit", "llm_enabled",
+            "auth_enabled", "rate_limit_enabled", "rate_limit", "llm_enabled",
             "llm_provider", "azure_docintel_enabled", "plugins_enabled"
         ]
         for field in expected_fields:
             assert field in data, f"Missing field: {field}"
+
+    def test_health_auth_disabled_by_default(self, test_client):
+        """Test that auth is disabled by default."""
+        response = test_client.get("/health")
+        data = response.json()
+        assert data["auth_enabled"] is False
 
 
 class TestProcessFileEndpoint:
@@ -330,3 +336,72 @@ class TestTempFileCleanup:
 
         assert response.status_code == 500
         # Error occurred but temp file cleanup should still happen
+
+
+class TestApiKeyAuthentication:
+    """Tests for API key authentication."""
+
+    def test_auth_disabled_allows_request_without_key(self, test_client, sample_txt_content, mock_markitdown):
+        """Test that requests work without API key when auth is disabled."""
+        response = test_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+        assert response.status_code == 200
+
+    def test_auth_enabled_rejects_missing_key(self, auth_client, sample_txt_content, mock_markitdown):
+        """Test that missing API key returns 401 when auth is enabled."""
+        response = auth_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")}
+        )
+        assert response.status_code == 401
+        data = response.json()
+        assert "Missing API key" in data["detail"]
+
+    def test_auth_enabled_rejects_invalid_key(self, auth_client, sample_txt_content, mock_markitdown, invalid_api_key):
+        """Test that invalid API key returns 401."""
+        response = auth_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")},
+            headers={"X-API-Key": invalid_api_key}
+        )
+        assert response.status_code == 401
+        data = response.json()
+        assert "Invalid API key" in data["detail"]
+
+    def test_auth_enabled_accepts_valid_key(self, auth_client, sample_txt_content, mock_markitdown, valid_api_key):
+        """Test that valid API key is accepted."""
+        response = auth_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")},
+            headers={"X-API-Key": valid_api_key}
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert "markdown" in data
+
+    def test_auth_enabled_accepts_second_valid_key(self, auth_client, sample_txt_content, mock_markitdown):
+        """Test that second configured API key is also accepted."""
+        response = auth_client.post(
+            "/process_file",
+            files={"file": ("test.txt", BytesIO(sample_txt_content), "text/plain")},
+            headers={"X-API-Key": "test-api-key-2"}
+        )
+        assert response.status_code == 200
+
+    def test_health_endpoint_not_protected(self, auth_client):
+        """Test that health endpoint does not require API key."""
+        response = auth_client.get("/health")
+        assert response.status_code == 200
+
+    def test_root_endpoint_not_protected(self, auth_client):
+        """Test that root endpoint does not require API key."""
+        response = auth_client.get("/")
+        assert response.status_code == 200
+
+    def test_health_shows_auth_enabled(self, auth_client):
+        """Test that health endpoint shows auth is enabled."""
+        response = auth_client.get("/health")
+        data = response.json()
+        assert data["auth_enabled"] is True
