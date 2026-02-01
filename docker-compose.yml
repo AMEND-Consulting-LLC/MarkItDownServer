@@ -18,6 +18,10 @@ services:
       - RATE_LIMIT=${RATE_LIMIT:-60/minute}
       - MAX_FILE_SIZE=${MAX_FILE_SIZE:-52428800}
 
+      # Authentication
+      - ENABLE_AUTH=${ENABLE_AUTH:-false}
+      - API_KEYS=${API_KEYS:-}
+
       # LLM Configuration (for image captioning)
       # Set LLM_PROVIDER to 'openai' or 'azure_openai' to enable
       - LLM_PROVIDER=${LLM_PROVIDER:-}
