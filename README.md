@@ -23,6 +23,7 @@ A production-ready web server application built using FastAPI that receives bina
 - **Error Handling**: Robust error handling with detailed error messages
 - **CORS Support**: Configurable CORS for web client integration
 - **Security Headers**: Built-in security headers middleware
+- **API Key Authentication**: Optional API key authentication for protected endpoints
 - **Docker Support**: Docker and Docker Compose deployment ready
 - **Azure Compatible**: Ready for Azure Container Apps deployment
 - **Comprehensive Testing**: 154+ pytest tests covering all functionality
@@ -187,6 +188,7 @@ Returns the health status of the service including feature configuration.
   "service": "MarkItDown Server",
   "version": "1.0.0",
   "workers": 1,
+  "auth_enabled": false,
   "rate_limit_enabled": false,
   "rate_limit": "60/minute",
   "llm_enabled": false,
@@ -220,8 +222,12 @@ Upload a document file and receive its content in Markdown format.
 }
 ```
 
+**Headers** (when authentication is enabled):
+- `X-API-Key`: Your API key
+
 **Error Responses**:
 - `400 Bad Request`: Invalid file type or empty file
+- `401 Unauthorized`: Missing or invalid API key (when auth enabled)
 - `413 Payload Too Large`: File exceeds 50MB
 - `500 Internal Server Error`: Conversion error
 
@@ -316,9 +322,14 @@ For complete documentation, see [samples/AiChatWebApp/README.md](./samples/AiCha
 #### cURL Example
 
 ```bash
+# Without authentication (when ENABLE_AUTH=false)
 curl -X POST "http://localhost:8490/process_file" \
-  -F "file=@document.pdf" \
-  -H "Content-Type: multipart/form-data"
+  -F "file=@document.pdf"
+
+# With authentication (when ENABLE_AUTH=true)
+curl -X POST "http://localhost:8490/process_file" \
+  -H "X-API-Key: your-api-key" \
+  -F "file=@document.pdf"
 ```
 
 #### Python Example
@@ -388,6 +399,13 @@ docker compose up -d
 | `MAX_FILE_SIZE` | `52428800` | Maximum file size in bytes (50MB) |
 | `ENABLE_RATE_LIMIT` | `false` | Enable rate limiting |
 | `RATE_LIMIT` | `60/minute` | Rate limit per IP |
+
+#### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_AUTH` | `false` | Enable API key authentication |
+| `API_KEYS` | *(empty)* | Comma-separated list of valid API keys |
 
 #### LLM Configuration (for image captioning)
 
@@ -497,6 +515,47 @@ docker run -d \
   -e AZURE_DOCINTEL_FILE_TYPES=pdf,docx \
   markitdownserver:latest
 ```
+
+### Enabling API Key Authentication
+
+Protect the `/process_file` endpoint with API key authentication:
+
+```bash
+# Generate secure API keys
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+
+# Run with authentication enabled
+docker run -d \
+  --name markitdownserver \
+  -p 8490:8490 \
+  -e ENABLE_AUTH=true \
+  -e API_KEYS="key1,key2,key3" \
+  markitdownserver:latest
+```
+
+**Using with Docker Compose** (recommended):
+
+```bash
+# Add to your .env file
+ENABLE_AUTH=true
+API_KEYS=your-secure-key-1,your-secure-key-2
+
+# Start the server
+docker compose up -d
+```
+
+**Making authenticated requests**:
+
+```bash
+curl -X POST "http://localhost:8490/process_file" \
+  -H "X-API-Key: your-secure-key-1" \
+  -F "file=@document.pdf"
+```
+
+**Notes**:
+- The `/health` and `/` endpoints remain public (no authentication required)
+- Multiple API keys can be configured (comma-separated)
+- Uses timing-safe comparison to prevent timing attacks
 
 ## 🚦 Concurrency and Performance
 
@@ -847,6 +906,12 @@ Comprehensive documentation is available in the [docs](./docs/) directory:
   - [User Manual](./samples/AiChatWebApp/docs/USER_MANUAL.md) *(coming soon)*
 
 ## 📈 Version History
+
+- **v1.2.0** (2025-02): Security and authentication release
+  - API key authentication for protected endpoints
+  - Timing-safe key comparison to prevent timing attacks
+  - Multiple API keys support
+  - Health endpoint shows authentication status
 
 - **v1.1.0** (2025-01): Enhanced capabilities release
   - LLM integration (OpenAI, Azure OpenAI, LiteLLM proxy support)
