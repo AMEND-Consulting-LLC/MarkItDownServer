@@ -131,15 +131,16 @@ def env_vars_backup() -> Generator[dict, None, None]:
 
 @pytest.fixture
 def clean_env(env_vars_backup) -> Generator[None, None, None]:
-    """Provide a clean environment without LLM/Azure vars."""
-    # Remove all LLM and Azure related env vars
+    """Provide a clean environment without LLM/Azure/Auth vars."""
+    # Remove all LLM, Azure, and Auth related env vars
     vars_to_remove = [
         'LLM_PROVIDER', 'OPENAI_API_KEY', 'OPENAI_BASE_URL',
         'AZURE_OPENAI_ENDPOINT', 'AZURE_OPENAI_API_KEY', 'AZURE_OPENAI_API_VERSION',
         'LLM_MODEL', 'LLM_PROMPT',
         'AZURE_DOCINTEL_ENDPOINT', 'AZURE_DOCINTEL_API_KEY', 'AZURE_DOCINTEL_FILE_TYPES',
         'ENABLE_PLUGINS', 'EXIFTOOL_PATH',
-        'WORKERS', 'PORT', 'ENABLE_RATE_LIMIT', 'RATE_LIMIT'
+        'WORKERS', 'PORT', 'ENABLE_RATE_LIMIT', 'RATE_LIMIT',
+        'ENABLE_AUTH', 'API_KEYS'
     ]
     for var in vars_to_remove:
         os.environ.pop(var, None)
@@ -193,3 +194,34 @@ def full_config_env(env_vars_backup) -> Generator[None, None, None]:
     os.environ['AZURE_DOCINTEL_API_KEY'] = 'test-docintel-key'
     os.environ['ENABLE_PLUGINS'] = 'true'
     yield
+
+
+@pytest.fixture
+def auth_env(env_vars_backup) -> Generator[None, None, None]:
+    """Set up environment with API key authentication enabled."""
+    os.environ['ENABLE_AUTH'] = 'true'
+    os.environ['API_KEYS'] = 'test-api-key-1,test-api-key-2'
+    yield
+
+
+@pytest.fixture
+def auth_client(auth_env) -> Generator[TestClient, None, None]:
+    """Create a TestClient with authentication enabled."""
+    # Need to reimport app after setting env vars
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    with TestClient(app_module.app) as client:
+        yield client
+
+
+@pytest.fixture
+def valid_api_key() -> str:
+    """Return a valid test API key."""
+    return "test-api-key-1"
+
+
+@pytest.fixture
+def invalid_api_key() -> str:
+    """Return an invalid test API key."""
+    return "invalid-key"

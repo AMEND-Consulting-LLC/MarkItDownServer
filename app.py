@@ -6,9 +6,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
 from markitdown import MarkItDown
 
@@ -48,6 +49,11 @@ logger = logging.getLogger(__name__)
 WORKERS = int(os.getenv('WORKERS', '1'))
 ENABLE_RATE_LIMIT = os.getenv('ENABLE_RATE_LIMIT', 'false').lower() == 'true'
 RATE_LIMIT = os.getenv('RATE_LIMIT', '60/minute')  # Default: 60 requests per minute
+
+# Authentication Configuration
+ENABLE_AUTH = os.getenv('ENABLE_AUTH', 'false').lower() == 'true'
+API_KEYS_RAW = os.getenv('API_KEYS', '')
+API_KEYS = set(key.strip() for key in API_KEYS_RAW.split(',') if key.strip())
 
 # LLM Configuration (for image captioning and enhanced document processing)
 LLM_PROVIDER = os.getenv('LLM_PROVIDER', '').lower()  # 'openai', 'azure_openai', or empty
@@ -103,6 +109,56 @@ elif ENABLE_RATE_LIMIT and not RATE_LIMIT_AVAILABLE:
 else:
     logger.info("Rate limiting disabled")
 
+# API Key authentication setup
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(api_key: str | None = Depends(api_key_header)) -> str | None:
+    """Verify the API key if authentication is enabled.
+
+    Args:
+        api_key: The API key from the X-API-Key header
+
+    Returns:
+        The validated API key if auth is enabled, None if auth is disabled
+
+    Raises:
+        HTTPException: If auth is enabled and the key is missing or invalid
+    """
+    if not ENABLE_AUTH:
+        return None
+
+    if not API_KEYS:
+        logger.warning("Authentication enabled but no API keys configured")
+        raise HTTPException(
+            status_code=500,
+            detail="Server authentication misconfigured"
+        )
+
+    if not api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing API key. Provide X-API-Key header."
+        )
+
+    # Use secrets.compare_digest for timing-safe comparison
+    import secrets
+    for valid_key in API_KEYS:
+        if secrets.compare_digest(api_key, valid_key):
+            return api_key
+
+    raise HTTPException(
+        status_code=401,
+        detail="Invalid API key"
+    )
+
+if ENABLE_AUTH:
+    if API_KEYS:
+        logger.info(f"API key authentication enabled ({len(API_KEYS)} key(s) configured)")
+    else:
+        logger.warning("API key authentication enabled but no keys configured!")
+else:
+    logger.info("API key authentication disabled")
+
 # Security headers middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
@@ -136,6 +192,7 @@ class HealthResponse(BaseModel):
     service: str
     version: str
     workers: int
+    auth_enabled: bool
     rate_limit_enabled: bool
     rate_limit: str | None
     llm_enabled: bool
@@ -320,6 +377,7 @@ def health_check():
         "service": "MarkItDown Server",
         "version": "1.0.0",
         "workers": WORKERS,
+        "auth_enabled": ENABLE_AUTH,
         "rate_limit_enabled": ENABLE_RATE_LIMIT and RATE_LIMIT_AVAILABLE,
         "rate_limit": RATE_LIMIT if (ENABLE_RATE_LIMIT and RATE_LIMIT_AVAILABLE) else None,
         "llm_enabled": llm_enabled,
@@ -333,16 +391,18 @@ def health_check():
     response_model=MarkdownResponse,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid file type or file too large"},
+        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing API key"},
         413: {"model": ErrorResponse, "description": "File too large"},
         429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
     summary="Convert document to Markdown",
-    description="Upload a document file and receive its content in Markdown format"
+    description="Upload a document file and receive its content in Markdown format. Requires X-API-Key header when authentication is enabled."
 )
 async def process_file(
     request: Request,
-    file: UploadFile = File(..., description="Document file to convert to Markdown")
+    file: UploadFile = File(..., description="Document file to convert to Markdown"),
+    api_key: str | None = Depends(verify_api_key)
 ) -> MarkdownResponse:
     """Process an uploaded file and convert it to Markdown."""
     request_start = time.time()
@@ -429,6 +489,7 @@ if __name__ == "__main__":
     logger.info("=" * 50)
     logger.info(f"Workers: {WORKERS}")
     logger.info(f"Log level: {LOG_LEVEL}")
+    logger.info(f"Authentication: {'enabled' if ENABLE_AUTH else 'disabled'}")
     logger.info(f"LLM Provider: {LLM_PROVIDER or 'disabled'}")
     if LLM_PROVIDER:
         logger.info(f"LLM Model: {LLM_MODEL}")
