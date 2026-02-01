@@ -8,15 +8,24 @@ A production-ready web server application built using FastAPI that receives bina
 
 ## 🚀 Features
 
-- **Multiple Format Support**: Convert DOC, DOCX, PPT, PPTX, PDF, XLS, XLSX, ODT, ODS, ODP, and TXT files to Markdown
+- **Multiple Format Support**: Convert 26+ file types including documents, images, and audio
+  - **Documents**: DOC, DOCX, PPT, PPTX, PDF, XLS, XLSX, ODT, ODS, ODP, TXT
+  - **Images**: JPG, JPEG, PNG, GIF, BMP, TIFF, WEBP, SVG
+  - **Audio**: MP3, WAV, FLAC, AAC, OGG, M4A, WMA
+- **LLM Integration**: Enhanced image captioning and document processing
+  - OpenAI API support
+  - Azure OpenAI support
+  - LiteLLM proxy support (for self-hosted or alternative LLM providers)
+- **Azure Document Intelligence**: Advanced PDF and document analysis
 - **FastAPI Framework**: Modern, fast, and well-documented REST API
-- **Health Checks**: Built-in health monitoring endpoints
+- **Health Checks**: Built-in health monitoring with feature status
 - **Input Validation**: Comprehensive file size, type, and content validation
 - **Error Handling**: Robust error handling with detailed error messages
 - **CORS Support**: Configurable CORS for web client integration
 - **Security Headers**: Built-in security headers middleware
-- **Docker Support**: Containerized deployment ready
+- **Docker Support**: Docker and Docker Compose deployment ready
 - **Azure Compatible**: Ready for Azure Container Apps deployment
+- **Comprehensive Testing**: 154+ pytest tests covering all functionality
 - **AI Chat Web App Sample**: Full-featured .NET Aspire application with document upload and RAG chat capabilities (see [samples/AiChatWebApp](./samples/AiChatWebApp/README.md))
 
 ## 📋 Table of Contents
@@ -32,7 +41,23 @@ A production-ready web server application built using FastAPI that receives bina
 
 ## ⚡ Quick Start
 
-### Using Docker (Recommended)
+### Using Docker Compose (Recommended)
+
+```bash
+# Copy the example environment file
+cp .env.example .env
+
+# Edit .env with your configuration (optional - defaults work out of the box)
+# nano .env
+
+# Build and start the server
+docker compose up -d
+
+# Test the health endpoint
+curl http://localhost:8490/health
+```
+
+### Using Docker
 
 ```bash
 # Build the Docker image
@@ -152,7 +177,7 @@ Returns service information and available endpoints.
 GET /health
 ```
 
-Returns the health status of the service.
+Returns the health status of the service including feature configuration.
 
 **Response**:
 ```json
@@ -160,7 +185,14 @@ Returns the health status of the service.
   "status": "healthy",
   "timestamp": "2025-01-07T12:00:00",
   "service": "MarkItDown Server",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "workers": 1,
+  "rate_limit_enabled": false,
+  "rate_limit": "60/minute",
+  "llm_enabled": false,
+  "llm_provider": null,
+  "azure_docintel_enabled": false,
+  "plugins_enabled": false
 }
 ```
 
@@ -174,13 +206,12 @@ Upload a document file and receive its content in Markdown format.
 **Parameters**:
 - `file`: The document file to convert (multipart/form-data)
 
-**Supported File Types**:
-- Microsoft Office: DOC, DOCX, XLS, XLSX, PPT, PPTX
-- PDF: PDF
-- OpenDocument: ODT, ODS, ODP
-- Text: TXT
+**Supported File Types** (26 formats):
+- **Documents**: DOC, DOCX, XLS, XLSX, PPT, PPTX, PDF, ODT, ODS, ODP, TXT
+- **Images**: JPG, JPEG, PNG, GIF, BMP, TIFF, WEBP, SVG
+- **Audio**: MP3, WAV, FLAC, AAC, OGG, M4A, WMA
 
-**File Size Limit**: 50MB
+**File Size Limit**: 50MB (configurable via `MAX_FILE_SIZE`)
 
 **Response**:
 ```json
@@ -330,17 +361,76 @@ Invoke-RestMethod -Uri $url -Method Post -ContentType "multipart/form-data; boun
 
 ## ⚙️ Configuration
 
+### Quick Setup with .env File
+
+The easiest way to configure the server is using the `.env` file:
+
+```bash
+# Copy the example configuration
+cp .env.example .env
+
+# Edit with your settings
+nano .env
+
+# Start with Docker Compose
+docker compose up -d
+```
+
 ### Environment Variables
 
-The server can be configured using environment variables:
+#### Server Configuration
 
-- `PORT`: Server port (default: 8490)
-- `HOST`: Server host (default: 0.0.0.0)
-- `MAX_FILE_SIZE`: Maximum file size in bytes (default: 52428800 = 50MB)
-- `LOG_LEVEL`: Logging level (default: INFO)
-- `WORKERS`: Number of worker processes (default: 1)
-- `ENABLE_RATE_LIMIT`: Enable rate limiting (default: false)
-- `RATE_LIMIT`: Rate limit (default: 60/minute)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8490` | Server port |
+| `WORKERS` | `1` | Number of uvicorn workers |
+| `LOG_LEVEL` | `INFO` | Logging level (DEBUG, INFO, WARNING, ERROR) |
+| `MAX_FILE_SIZE` | `52428800` | Maximum file size in bytes (50MB) |
+| `ENABLE_RATE_LIMIT` | `false` | Enable rate limiting |
+| `RATE_LIMIT` | `60/minute` | Rate limit per IP |
+
+#### LLM Configuration (for image captioning)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | *(empty)* | `openai`, `azure_openai`, or empty to disable |
+| `LLM_MODEL` | `gpt-4o` | Model name or deployment name |
+| `LLM_PROMPT` | *(empty)* | Custom prompt for image descriptions |
+| `OPENAI_API_KEY` | *(empty)* | OpenAI API key (when using `openai` provider) |
+| `OPENAI_BASE_URL` | *(empty)* | Custom base URL for OpenAI-compatible APIs (e.g., LiteLLM) |
+| `AZURE_OPENAI_ENDPOINT` | *(empty)* | Azure OpenAI endpoint URL |
+| `AZURE_OPENAI_API_KEY` | *(empty)* | Azure OpenAI API key |
+| `AZURE_OPENAI_API_VERSION` | `2024-02-15-preview` | Azure OpenAI API version |
+
+#### Azure Document Intelligence
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AZURE_DOCINTEL_ENDPOINT` | *(empty)* | Azure Document Intelligence endpoint |
+| `AZURE_DOCINTEL_API_KEY` | *(empty)* | Azure Document Intelligence API key |
+| `AZURE_DOCINTEL_FILE_TYPES` | *(empty)* | Comma-separated file types (e.g., `pdf,docx,xlsx`) |
+
+#### Other Features
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ENABLE_PLUGINS` | `false` | Enable third-party MarkItDown plugins |
+| `EXIFTOOL_PATH` | *(empty)* | Custom path to ExifTool binary |
+
+### Docker Compose (Recommended)
+
+Use Docker Compose with the provided `docker-compose.yml`:
+
+```bash
+# Basic startup
+docker compose up -d
+
+# With LLM enabled (edit .env first)
+LLM_PROVIDER=openai OPENAI_API_KEY=sk-... docker compose up -d
+
+# View logs
+docker compose logs -f
+```
 
 ### Docker Environment
 
@@ -353,6 +443,58 @@ docker run -d \
   -e WORKERS=4 \
   -e ENABLE_RATE_LIMIT=true \
   -e RATE_LIMIT=100/minute \
+  markitdownserver:latest
+```
+
+### Enabling LLM Features
+
+#### With OpenAI
+
+```bash
+docker run -d \
+  --name markitdownserver \
+  -p 8490:8490 \
+  -e LLM_PROVIDER=openai \
+  -e OPENAI_API_KEY=sk-your-api-key \
+  -e LLM_MODEL=gpt-4o \
+  markitdownserver:latest
+```
+
+#### With LiteLLM Proxy
+
+```bash
+docker run -d \
+  --name markitdownserver \
+  -p 8490:8490 \
+  -e LLM_PROVIDER=openai \
+  -e OPENAI_API_KEY=your-litellm-key \
+  -e OPENAI_BASE_URL=http://localhost:4000/v1 \
+  -e LLM_MODEL=gpt-4o \
+  markitdownserver:latest
+```
+
+#### With Azure OpenAI
+
+```bash
+docker run -d \
+  --name markitdownserver \
+  -p 8490:8490 \
+  -e LLM_PROVIDER=azure_openai \
+  -e AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com \
+  -e AZURE_OPENAI_API_KEY=your-azure-key \
+  -e LLM_MODEL=your-deployment-name \
+  markitdownserver:latest
+```
+
+### Enabling Azure Document Intelligence
+
+```bash
+docker run -d \
+  --name markitdownserver \
+  -p 8490:8490 \
+  -e AZURE_DOCINTEL_ENDPOINT=https://your-resource.cognitiveservices.azure.com \
+  -e AZURE_DOCINTEL_API_KEY=your-docintel-key \
+  -e AZURE_DOCINTEL_FILE_TYPES=pdf,docx \
   markitdownserver:latest
 ```
 
@@ -397,7 +539,41 @@ pip install slowapi
 
 ## 🧪 Testing
 
-### Test the Server
+### Running the Test Suite
+
+The project includes a comprehensive pytest test suite with 154+ tests:
+
+```bash
+# Install test dependencies
+pip install -r requirements-test.txt
+
+# Run all tests
+pytest
+
+# Run with verbose output
+pytest -v
+
+# Run with coverage report
+pytest --cov=app --cov-report=term-missing
+
+# Run specific test file
+pytest tests/test_endpoints.py
+pytest tests/test_helpers.py
+pytest tests/test_configuration.py
+```
+
+**Running tests in Docker**:
+```bash
+docker compose run --rm markitdown-server pytest
+```
+
+### Test Categories
+
+- **`tests/test_helpers.py`**: Unit tests for helper functions (sanitize_extension, allowed_file, etc.)
+- **`tests/test_endpoints.py`**: Integration tests for API endpoints (/, /health, /process_file)
+- **`tests/test_configuration.py`**: Environment variable and configuration tests
+
+### Manual Testing
 
 1. **Start the server**:
    ```bash
@@ -500,19 +676,29 @@ az containerapp up \
 MarkItDownServer/
 ├── app.py                          # Main FastAPI application
 ├── requirements.txt                # Python dependencies
+├── requirements-test.txt           # Test dependencies
+├── pytest.ini                      # Pytest configuration
 ├── dockerfile                      # Docker configuration
+├── docker-compose.yml              # Docker Compose configuration
+├── .env.example                    # Example environment variables
 ├── README.md                       # This file
 ├── docs/                           # Comprehensive documentation
+├── tests/                          # Test suite
+│   ├── conftest.py                 # Shared test fixtures
+│   ├── test_endpoints.py           # API endpoint tests
+│   ├── test_helpers.py             # Helper function tests
+│   └── test_configuration.py       # Configuration tests
 ├── samples/
 │   ├── SimpleConsole/              # Basic C# client example
 │   │   ├── Program.cs
 │   │   ├── SimpleConsole.csproj
 │   │   └── Benefit_Options.pdf
-│   └── DetailedConsole/            # Advanced C# client example
-│       ├── Program.cs
-│       ├── DetailedConsole.csproj
-│       ├── appsettings.json
-│       └── Benefit_Options.pdf
+│   ├── DetailedConsole/            # Advanced C# client example
+│   │   ├── Program.cs
+│   │   ├── DetailedConsole.csproj
+│   │   ├── appsettings.json
+│   │   └── Benefit_Options.pdf
+│   └── AiChatWebApp/               # Full .NET Aspire RAG application
 ├── src/                            # Legacy client (preserved)
 │   └── ...
 └── utils/
@@ -553,15 +739,26 @@ These interfaces allow you to:
 
 ### Python Dependencies
 
-- **fastapi** (0.115.5): Modern web framework for building APIs
-- **uvicorn** (0.32.1): ASGI server for FastAPI
-- **python-multipart** (0.0.20): Multipart form data support
-- **markitdown** (0.0.1a2): Document to Markdown conversion
-- **pydantic** (2.10.3): Data validation using Python type hints
+- **fastapi** (0.128.0): Modern web framework for building APIs
+- **uvicorn[standard]** (0.40.0): ASGI server for FastAPI
+- **python-multipart** (0.0.22): Multipart form data support
+- **markitdown[all]** (≥0.1.4): Document to Markdown conversion with all optional features
+- **pydantic** (2.12.5): Data validation using Python type hints
+- **openai** (≥1.0.0): OpenAI and Azure OpenAI client
+- **azure-identity** (≥1.15.0): Azure credential handling
+
+### Optional Dependencies
+
+- **slowapi**: Rate limiting (install with `pip install slowapi`)
+
+### Test Dependencies
+
+Install with `pip install -r requirements-test.txt`:
+- pytest, pytest-asyncio, pytest-cov, httpx, pytest-mock
 
 ### System Requirements
 
-- Python 3.12 or higher
+- Python 3.9 or higher (3.12 recommended)
 - 512MB RAM minimum (1GB recommended)
 - 100MB disk space
 
@@ -650,6 +847,16 @@ Comprehensive documentation is available in the [docs](./docs/) directory:
   - [User Manual](./samples/AiChatWebApp/docs/USER_MANUAL.md) *(coming soon)*
 
 ## 📈 Version History
+
+- **v1.1.0** (2025-01): Enhanced capabilities release
+  - LLM integration (OpenAI, Azure OpenAI, LiteLLM proxy support)
+  - Azure Document Intelligence integration
+  - Image format support (JPG, PNG, GIF, BMP, TIFF, WEBP, SVG)
+  - Audio format support (MP3, WAV, FLAC, AAC, OGG, M4A, WMA)
+  - Docker Compose and .env configuration
+  - Comprehensive test suite (154+ tests)
+  - Enhanced logging with timing metrics
+  - Plugin support
 
 - **v1.0.0** (2025-01): Initial release with production-ready features
   - Multi-format document conversion
