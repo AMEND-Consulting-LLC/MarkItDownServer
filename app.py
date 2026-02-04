@@ -1,10 +1,14 @@
+import asyncio
 import logging
 import os
 import sys
 import tempfile
 import time
-from datetime import datetime
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
@@ -78,7 +82,7 @@ EXIFTOOL_PATH = os.getenv('EXIFTOOL_PATH')
 app = FastAPI(
     title="MarkItDown Server",
     description="API for converting various document formats to Markdown",
-    version="1.0.0",
+    version="1.1.0",
     contact={
         "name": "El Bruno",
         "url": "https://github.com/elbruno/MarkItDownServer",
@@ -199,6 +203,194 @@ class HealthResponse(BaseModel):
     llm_provider: str | None
     azure_docintel_enabled: bool
     plugins_enabled: bool
+    async_jobs_pending: int
+    async_jobs_processing: int
+    async_jobs_total: int
+
+
+# Async job processing models
+JobStatus = Literal["pending", "processing", "completed", "failed"]
+
+
+class AsyncJobSubmitResponse(BaseModel):
+    """Response returned when submitting a file for async processing."""
+    job_id: str
+    status: JobStatus
+    message: str
+    status_url: str
+
+
+class JobStatusResponse(BaseModel):
+    """Response returned when checking job status."""
+    job_id: str
+    status: JobStatus
+    created_at: str
+    completed_at: str | None = None
+    filename: str
+    markdown: str | None = None
+    error: str | None = None
+
+
+class Job:
+    """Represents an async file processing job."""
+
+    def __init__(self, job_id: str, filename: str, temp_file_path: str):
+        self.id = job_id
+        self.filename = filename
+        self.temp_file_path = temp_file_path
+        self.status: JobStatus = "pending"
+        self.created_at = datetime.utcnow()
+        self.completed_at: datetime | None = None
+        self.result: str | None = None
+        self.error: str | None = None
+
+    def to_response(self) -> JobStatusResponse:
+        """Convert job to API response."""
+        return JobStatusResponse(
+            job_id=self.id,
+            status=self.status,
+            created_at=self.created_at.isoformat(),
+            completed_at=self.completed_at.isoformat() if self.completed_at else None,
+            filename=self.filename,
+            markdown=self.result,
+            error=self.error
+        )
+
+
+class JobStore:
+    """In-memory store for async jobs with TTL-based expiration."""
+
+    JOB_TTL_HOURS = 1  # Jobs expire after 1 hour
+    CLEANUP_INTERVAL_MINUTES = 10  # Cleanup runs every 10 minutes
+
+    def __init__(self):
+        self._jobs: dict[str, Job] = {}
+        self._lock = asyncio.Lock()
+
+    async def create(self, filename: str, temp_file_path: str) -> Job:
+        """Create a new job and return it."""
+        job_id = str(uuid.uuid4())
+        job = Job(job_id, filename, temp_file_path)
+        async with self._lock:
+            self._jobs[job_id] = job
+        logger.info(f"Created async job {job_id} for file: {filename}")
+        return job
+
+    async def get(self, job_id: str) -> Job | None:
+        """Get a job by ID, or None if not found or expired."""
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if job and self._is_expired(job):
+                # Clean up expired job
+                del self._jobs[job_id]
+                self._cleanup_temp_file(job)
+                return None
+            return job
+
+    async def update_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        result: str | None = None,
+        error: str | None = None
+    ) -> None:
+        """Update job status and optionally set result or error."""
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.status = status
+                if result is not None:
+                    job.result = result
+                if error is not None:
+                    job.error = error
+                if status in ("completed", "failed"):
+                    job.completed_at = datetime.utcnow()
+                    # Clean up temp file after processing
+                    self._cleanup_temp_file(job)
+                logger.debug(f"Job {job_id} status updated to: {status}")
+
+    async def cleanup_expired(self) -> int:
+        """Remove expired jobs and return count of removed jobs."""
+        removed = 0
+        async with self._lock:
+            expired_ids = [
+                job_id for job_id, job in self._jobs.items()
+                if self._is_expired(job)
+            ]
+            for job_id in expired_ids:
+                job = self._jobs.pop(job_id)
+                self._cleanup_temp_file(job)
+                removed += 1
+        if removed > 0:
+            logger.info(f"Cleaned up {removed} expired job(s)")
+        return removed
+
+    def get_stats(self) -> dict[str, int]:
+        """Get job statistics (non-async for health endpoint)."""
+        pending = sum(1 for j in self._jobs.values() if j.status == "pending")
+        processing = sum(1 for j in self._jobs.values() if j.status == "processing")
+        return {
+            "pending": pending,
+            "processing": processing,
+            "total": len(self._jobs)
+        }
+
+    def _is_expired(self, job: Job) -> bool:
+        """Check if a job has expired based on TTL."""
+        expiry_time = job.created_at + timedelta(hours=self.JOB_TTL_HOURS)
+        return datetime.utcnow() > expiry_time
+
+    def _cleanup_temp_file(self, job: Job) -> None:
+        """Clean up temporary file associated with a job."""
+        if job.temp_file_path and os.path.exists(job.temp_file_path):
+            try:
+                os.remove(job.temp_file_path)
+                logger.debug(f"Cleaned up temp file for job {job.id}")
+            except OSError as e:
+                logger.warning(f"Failed to clean up temp file for job {job.id}: {e}")
+
+
+# Global job store instance
+job_store = JobStore()
+
+# Thread pool for running blocking conversions
+thread_pool = ThreadPoolExecutor(max_workers=10)
+
+
+async def periodic_job_cleanup():
+    """Background task that periodically cleans up expired jobs."""
+    while True:
+        await asyncio.sleep(JobStore.CLEANUP_INTERVAL_MINUTES * 60)
+        try:
+            await job_store.cleanup_expired()
+        except Exception as e:
+            logger.error(f"Error during job cleanup: {e}")
+
+
+# Store cleanup task reference for shutdown
+_cleanup_task: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on application startup."""
+    global _cleanup_task
+    _cleanup_task = asyncio.create_task(periodic_job_cleanup())
+    logger.info("Started periodic job cleanup task")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources on application shutdown."""
+    global _cleanup_task
+    if _cleanup_task:
+        _cleanup_task.cancel()
+        try:
+            await _cleanup_task
+        except asyncio.CancelledError:
+            pass
+    thread_pool.shutdown(wait=False)
+    logger.info("Shutdown complete")
 
 def sanitize_extension(filename: str | None) -> str:
     """Extract and sanitize the file extension from a filename.
@@ -342,11 +534,13 @@ def read_root():
     return {
         "service": "MarkItDown Server",
         "description": "API for converting documents to Markdown",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "endpoints": {
             "health": "/health",
             "docs": "/docs",
-            "process": "/process_file"
+            "process": "/process_file",
+            "process_async": "/process_file/async",
+            "job_status": "/jobs/{job_id}"
         }
     }
 
@@ -371,11 +565,14 @@ def health_check():
     # Determine Azure Document Intelligence status
     azure_docintel_enabled = bool(AZURE_DOCINTEL_ENDPOINT and AZURE_DOCINTEL_AVAILABLE)
 
+    # Get async job stats
+    job_stats = job_store.get_stats()
+
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
         "service": "MarkItDown Server",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "workers": WORKERS,
         "auth_enabled": ENABLE_AUTH,
         "rate_limit_enabled": ENABLE_RATE_LIMIT and RATE_LIMIT_AVAILABLE,
@@ -383,7 +580,10 @@ def health_check():
         "llm_enabled": llm_enabled,
         "llm_provider": llm_provider_name,
         "azure_docintel_enabled": azure_docintel_enabled,
-        "plugins_enabled": ENABLE_PLUGINS
+        "plugins_enabled": ENABLE_PLUGINS,
+        "async_jobs_pending": job_stats["pending"],
+        "async_jobs_processing": job_stats["processing"],
+        "async_jobs_total": job_stats["total"]
     }
 
 @app.post(
@@ -479,6 +679,139 @@ async def process_file(
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
             logger.debug(f"Temp file deleted: {temp_file_path}")
+
+
+async def process_file_background(job: Job) -> None:
+    """Background task to process a file and update job status."""
+    try:
+        await job_store.update_status(job.id, "processing")
+        logger.info(f"Job {job.id}: Starting background conversion for {job.filename}")
+
+        # Run blocking conversion in thread pool
+        loop = asyncio.get_event_loop()
+        markdown_content = await loop.run_in_executor(
+            thread_pool,
+            convert_to_md,
+            job.temp_file_path
+        )
+
+        await job_store.update_status(job.id, "completed", result=markdown_content)
+        logger.info(f"Job {job.id}: Conversion completed successfully")
+
+    except Exception as e:
+        error_msg = str(e)
+        await job_store.update_status(job.id, "failed", error=error_msg)
+        logger.error(f"Job {job.id}: Conversion failed - {error_msg}")
+
+
+@app.post(
+    '/process_file/async',
+    response_model=AsyncJobSubmitResponse,
+    status_code=202,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid file type or empty file"},
+        401: {"model": ErrorResponse, "description": "Unauthorized - Invalid or missing API key"},
+        413: {"model": ErrorResponse, "description": "File too large"},
+        429: {"model": ErrorResponse, "description": "Rate limit exceeded"},
+    },
+    summary="Submit document for async conversion",
+    description="Upload a document file for asynchronous processing. Returns a job ID immediately. Poll /jobs/{job_id} to check status and retrieve results."
+)
+async def process_file_async(
+    request: Request,
+    file: UploadFile = File(..., description="Document file to convert to Markdown"),
+    api_key: str | None = Depends(verify_api_key)
+) -> AsyncJobSubmitResponse:
+    """Submit a file for asynchronous processing."""
+    # Validate filename
+    if not file.filename:
+        return JSONResponse(
+            content={'error': 'Filename is required'},
+            status_code=400
+        )
+
+    logger.info(f"=== Async processing request: {file.filename} ===")
+
+    if not allowed_file(file.filename):
+        logger.warning(f"Rejected file type: {file.filename}")
+        return JSONResponse(
+            content={'error': f'File type not allowed. Allowed types: {", ".join(ALLOWED_EXTENSIONS)}'},
+            status_code=400
+        )
+
+    try:
+        # Read file content
+        file_content = await file.read()
+        file_size_kb = len(file_content) / 1024
+        logger.info(f"Received: {file.filename} ({file_size_kb:.1f} KB)")
+
+        # Validate file size
+        if len(file_content) > MAX_FILE_SIZE:
+            logger.warning(f"File too large: {file_size_kb:.1f} KB > {MAX_FILE_SIZE / 1024:.1f} KB")
+            return JSONResponse(
+                content={'error': f'File too large. Maximum size: {MAX_FILE_SIZE / (1024*1024):.0f}MB'},
+                status_code=413
+            )
+
+        # Validate file is not empty
+        if len(file_content) == 0:
+            logger.warning("Rejected empty file")
+            return JSONResponse(
+                content={'error': 'File is empty'},
+                status_code=400
+            )
+
+        # Save the file to a temporary directory with sanitized extension
+        safe_suffix = sanitize_extension(file.filename)
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=safe_suffix
+        ) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+
+        # Create job and start background processing
+        job = await job_store.create(file.filename, temp_file_path)
+
+        # Schedule background task
+        asyncio.create_task(process_file_background(job))
+
+        return AsyncJobSubmitResponse(
+            job_id=job.id,
+            status="pending",
+            message="File queued for processing",
+            status_url=f"/jobs/{job.id}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error submitting async job: {str(e)}")
+        return JSONResponse(content={'error': str(e)}, status_code=500)
+
+
+@app.get(
+    '/jobs/{job_id}',
+    response_model=JobStatusResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Job not found or expired"},
+    },
+    summary="Get job status",
+    description="Check the status of an async processing job. Returns the result when completed."
+)
+async def get_job_status(
+    job_id: str,
+    api_key: str | None = Depends(verify_api_key)
+) -> JobStatusResponse:
+    """Get the status and result of an async job."""
+    job = await job_store.get(job_id)
+
+    if not job:
+        return JSONResponse(
+            content={'error': 'Job not found or expired'},
+            status_code=404
+        )
+
+    return job.to_response()
+
 
 if __name__ == "__main__":
     import uvicorn
