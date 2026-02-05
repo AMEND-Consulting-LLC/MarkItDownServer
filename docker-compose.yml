@@ -45,6 +45,11 @@ services:
       # Other Features
       - ENABLE_PLUGINS=${ENABLE_PLUGINS:-false}
       - EXIFTOOL_PATH=${EXIFTOOL_PATH:-}
+
+      # Async Processing Configuration
+      - ASYNC_JOB_TTL_HOURS=${ASYNC_JOB_TTL_HOURS:-1}
+      - ASYNC_CLEANUP_INTERVAL_MINUTES=${ASYNC_CLEANUP_INTERVAL_MINUTES:-10}
+      - ASYNC_MAX_WORKERS=${ASYNC_MAX_WORKERS:-10}
     volumes:
       # Optional: Mount a volume for temporary file processing
       # - ./data:/app/data

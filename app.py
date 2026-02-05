@@ -78,6 +78,11 @@ AZURE_DOCINTEL_FILE_TYPES = os.getenv('AZURE_DOCINTEL_FILE_TYPES')  # Comma-sepa
 ENABLE_PLUGINS = os.getenv('ENABLE_PLUGINS', 'false').lower() == 'true'
 EXIFTOOL_PATH = os.getenv('EXIFTOOL_PATH')
 
+# Async Processing Configuration
+ASYNC_JOB_TTL_HOURS = int(os.getenv('ASYNC_JOB_TTL_HOURS', '1'))
+ASYNC_CLEANUP_INTERVAL_MINUTES = int(os.getenv('ASYNC_CLEANUP_INTERVAL_MINUTES', '10'))
+ASYNC_MAX_WORKERS = int(os.getenv('ASYNC_MAX_WORKERS', '10'))
+
 # FastAPI app with metadata
 app = FastAPI(
     title="MarkItDown Server",
@@ -260,9 +265,6 @@ class Job:
 class JobStore:
     """In-memory store for async jobs with TTL-based expiration."""
 
-    JOB_TTL_HOURS = 1  # Jobs expire after 1 hour
-    CLEANUP_INTERVAL_MINUTES = 10  # Cleanup runs every 10 minutes
-
     def __init__(self):
         self._jobs: dict[str, Job] = {}
         self._lock = asyncio.Lock()
@@ -337,7 +339,7 @@ class JobStore:
 
     def _is_expired(self, job: Job) -> bool:
         """Check if a job has expired based on TTL."""
-        expiry_time = job.created_at + timedelta(hours=self.JOB_TTL_HOURS)
+        expiry_time = job.created_at + timedelta(hours=ASYNC_JOB_TTL_HOURS)
         return datetime.utcnow() > expiry_time
 
     def _cleanup_temp_file(self, job: Job) -> None:
@@ -354,13 +356,13 @@ class JobStore:
 job_store = JobStore()
 
 # Thread pool for running blocking conversions
-thread_pool = ThreadPoolExecutor(max_workers=10)
+thread_pool = ThreadPoolExecutor(max_workers=ASYNC_MAX_WORKERS)
 
 
 async def periodic_job_cleanup():
     """Background task that periodically cleans up expired jobs."""
     while True:
-        await asyncio.sleep(JobStore.CLEANUP_INTERVAL_MINUTES * 60)
+        await asyncio.sleep(ASYNC_CLEANUP_INTERVAL_MINUTES * 60)
         try:
             await job_store.cleanup_expired()
         except Exception as e:
