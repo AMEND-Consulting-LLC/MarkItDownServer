@@ -17,9 +17,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 @pytest.fixture
 def test_client() -> Generator[TestClient, None, None]:
     """Create a FastAPI TestClient for synchronous testing."""
-    # Import app here to avoid module-level import issues with env vars
-    from app import app
-    with TestClient(app) as client:
+    # Reload app to ensure clean state (auth disabled by default)
+    import importlib
+    import app as app_module
+    importlib.reload(app_module)
+    with TestClient(app_module.app) as client:
         yield client
 
 
