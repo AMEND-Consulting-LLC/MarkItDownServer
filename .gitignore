@@ -410,3 +410,9 @@ htmlcov/
 *.egg-info/
 dist/
 build/
+
+# Python virtual environments
+.venv/
+.venv-*/
+venv/
+env/
