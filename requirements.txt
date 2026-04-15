@@ -16,3 +16,4 @@ azure-identity>=1.15.0
 
 # Optional: Rate limiting (install with: pip install slowapi)
 # slowapi==0.1.9
+h11>=0.16.0 # not directly required, pinned by Snyk to avoid a vulnerability
